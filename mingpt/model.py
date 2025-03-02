@@ -193,7 +193,7 @@ class GPT(nn.Module):
         if pos_enc_type == 1:
             pos_enc = nn.Embedding(config.block_size, config.n_embd)
         elif pos_enc_type == 2:
-            pos_enc = self.sinusoidal_pos_enc(torch.arange(config.block_size).unsqueeze(0), config.n_embd)
+            pos_enc = self.sinusoidal_pos_enc(config.block_size, config.n_embd)
             pos_enc = nn.Embedding.from_pretrained(pos_enc, freeze=True)
 
         self.transformer = nn.ModuleDict(dict(
@@ -321,8 +321,15 @@ class GPT(nn.Module):
         div = torch.exp(torch.arange(0, n_embd, 2).float() * -(math.log(10000.0) / n_embd))
         emb[:, 0::2] = torch.sin(pos * div)
         emb[:, 1::2] = torch.cos(pos * div)
+        print("Sinusoidal positional encodings:" + emb)
 
         return emb
+    
+    def rotary_pos_enc(self, block_size, n_embd):
+        """
+        Compute rotary positional encodings with a given length and dimensionality.
+        """
+        pass
 
     def forward(self, idx, targets=None):
         device = idx.device
