@@ -152,7 +152,14 @@ class GPT(nn.Module):
         C.pad_token = -1
         return C
 
-    def __init__(self, config):
+    def __init__(self, config, pos_enc_type=1):
+        """
+        Initializes a GPT model. There are three possible positional encodings:
+        0: no positional encodings
+        1: learned positional encodings (default)
+        2: sinusoidal positional encodings
+        3: rotary positional encodings
+        """
         super().__init__()
         assert config.vocab_size is not None
         assert config.block_size is not None
@@ -181,10 +188,17 @@ class GPT(nn.Module):
                 'gpt-micro':    dict(n_layer=4, n_head=4, n_embd=128),
                 'gpt-nano':     dict(n_layer=3, n_head=3, n_embd=48),
             }[config.model_type])
+        
+        # Configure positional embeddings
+        if pos_enc_type == 1:
+            pos_enc = nn.Embedding(config.block_size, config.n_embd)
+        elif pos_enc_type == 2:
+            pos_enc = self.sinusoidal_pos_enc(torch.arange(config.block_size).unsqueeze(0), config.n_embd)
+            pos_enc = nn.Embedding.from_pretrained(pos_enc, freeze=True)
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
-            wpe = nn.Embedding(config.block_size, config.n_embd),
+            wpe = pos_enc,
             drop = nn.Dropout(config.embd_pdrop),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = nn.LayerNorm(config.n_embd),
@@ -297,6 +311,18 @@ class GPT(nn.Module):
         ]
         optimizer = torch.optim.AdamW(optim_groups, lr=train_config.learning_rate, betas=train_config.betas)
         return optimizer
+    
+    def sinusoidal_pos_enc(self, block_size, n_embd):
+        """
+        Compute sinusoidal positional encodings with a given length and dimensionality.
+        """
+        emb = torch.zeros(block_size, n_embd)
+        pos = torch.arange(0, block_size).unsqueeze(1).float()
+        div = torch.exp(torch.arange(0, n_embd, 2).float() * -(math.log(10000.0) / n_embd))
+        emb[:, 0::2] = torch.sin(pos * div)
+        emb[:, 1::2] = torch.cos(pos * div)
+
+        return emb
 
     def forward(self, idx, targets=None):
         device = idx.device
