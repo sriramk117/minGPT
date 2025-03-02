@@ -26,49 +26,85 @@ class NewGELU(nn.Module):
     def forward(self, x):
         return 0.5 * x * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))))
 
+#class CausalSelfAttention(nn.Module):
+#    """
+#    A vanilla multi-head masked self-attention layer with a projection at the end.
+#    It is possible to use torch.nn.MultiheadAttention here but I am including an
+#    explicit implementation here to show that there is nothing too scary here.
+#    """
+#
+#    def __init__(self, config):
+#        super().__init__()
+#        assert config.n_embd % config.n_head == 0
+#        # key, query, value projections for all heads, but in a batch
+#        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
+#        # output projection
+#        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+#        # regularization
+#        self.attn_dropout = nn.Dropout(config.attn_pdrop)
+#        self.resid_dropout = nn.Dropout(config.resid_pdrop)
+#        # causal mask to ensure that attention is only applied to the left in the input sequence
+#        self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
+#                                     .view(1, 1, config.block_size, config.block_size))
+#        self.n_head = config.n_head
+#        self.n_embd = config.n_embd
+#
+#    def forward(self, x):
+#        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+#
+#        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+#        q, k ,v  = self.c_attn(x).split(self.n_embd, dim=2)
+#        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+#        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+#        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+#
+#        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+#        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+#        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+#        att = F.softmax(att, dim=-1)
+#        att = self.attn_dropout(att)
+#        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+#        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+#
+#        # output projection
+#        y = self.resid_dropout(self.c_proj(y))
+#        return y
+
+
 class CausalSelfAttention(nn.Module):
     """
-    A vanilla multi-head masked self-attention layer with a projection at the end.
-    It is possible to use torch.nn.MultiheadAttention here but I am including an
-    explicit implementation here to show that there is nothing too scary here.
+    Attention layer which pulls its implementation from the config, with a
+    projection at the end.
     """
 
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads, but in a batch
-        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
+        # self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
         # output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
         # regularization
         self.attn_dropout = nn.Dropout(config.attn_pdrop)
         self.resid_dropout = nn.Dropout(config.resid_pdrop)
         # causal mask to ensure that attention is only applied to the left in the input sequence
-        self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
-                                     .view(1, 1, config.block_size, config.block_size))
         self.n_head = config.n_head
         self.n_embd = config.n_embd
 
-    def forward(self, x):
-        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+        self.W_Q, self.W_K, self.W_V = config.attn_init_fn(self.n_embd)
+        self.attn_fn = config.attn_fn
 
-        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-        q, k ,v  = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-
-        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-        att = F.softmax(att, dim=-1)
-        att = self.attn_dropout(att)
-        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+    def forward(self, x, mask_tokens=None):
+        #B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+        Q,K,V = self.W_Q(x), self.W_K(x), self.W_V(x)
+        y = self.attn_fn(Q,K,V, n_heads=self.n_head, causal=True)
+        if mask_tokens is not None:
+            y[mask_tokens] = 0
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
         return y
+
 
 class Block(nn.Module):
     """ an unassuming Transformer block """
@@ -87,8 +123,8 @@ class Block(nn.Module):
         m = self.mlp
         self.mlpf = lambda x: m.dropout(m.c_proj(m.act(m.c_fc(x)))) # MLP forward
 
-    def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
+    def forward(self, x, mask_tokens=None):
+        x = x + self.attn(self.ln_1(x), mask_tokens=mask_tokens)
         x = x + self.mlpf(self.ln_2(x))
         return x
 
@@ -110,6 +146,10 @@ class GPT(nn.Module):
         C.embd_pdrop = 0.1
         C.resid_pdrop = 0.1
         C.attn_pdrop = 0.1
+        # added by cse447/517
+        C.attn_init_fn = None
+        C.attn_fn = None
+        C.pad_token = -1
         return C
 
     def __init__(self, config):
@@ -117,6 +157,7 @@ class GPT(nn.Module):
         assert config.vocab_size is not None
         assert config.block_size is not None
         self.block_size = config.block_size
+        self.pad_token = config.pad_token
 
         type_given = config.model_type is not None
         params_given = all([config.n_layer is not None, config.n_head is not None, config.n_embd is not None])
@@ -263,19 +304,21 @@ class GPT(nn.Module):
         assert t <= self.block_size, f"Cannot forward sequence of length {t}, block size is only {self.block_size}"
         pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
 
+        mask_tokens = (idx == self.pad_token)
+
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
-            x = block(x)
+            x = block(x, mask_tokens=mask_tokens)
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
 
         # if we are given some desired targets also calculate the loss
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=self.pad_token)
 
         return logits, loss
 
