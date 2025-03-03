@@ -190,11 +190,14 @@ class GPT(nn.Module):
             }[config.model_type])
         
         # Configure positional embeddings
-        if pos_enc_type == 1:
+        if pos_enc_type == 0:
+            pos_enc = None
+        elif pos_enc_type == 1:
             pos_enc = nn.Embedding(config.block_size, config.n_embd)
         elif pos_enc_type == 2:
             pos_enc = self.sinusoidal_pos_enc(config.block_size, config.n_embd)
             pos_enc = nn.Embedding.from_pretrained(pos_enc, freeze=True)
+            print("Sinusoidal positional encodings:" + pos_enc)
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
@@ -321,7 +324,6 @@ class GPT(nn.Module):
         div = torch.exp(torch.arange(0, n_embd, 2).float() * -(math.log(10000.0) / n_embd))
         emb[:, 0::2] = torch.sin(pos * div)
         emb[:, 1::2] = torch.cos(pos * div)
-        print("Sinusoidal positional encodings:" + emb)
 
         return emb
     
@@ -342,6 +344,8 @@ class GPT(nn.Module):
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
+        print("Token Embeddings:" + tok_emb)
+        print("Positional Embeddings:" + pos_emb)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x, mask_tokens=mask_tokens)
