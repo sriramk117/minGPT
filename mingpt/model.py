@@ -105,6 +105,31 @@ class CausalSelfAttention(nn.Module):
         y = self.resid_dropout(self.c_proj(y))
         return y
 
+class RotaryPositionalEncoding(nn.Module):
+    def __init__(self, block_size, n_embd):
+        super(RotaryPositionalEncoding, self).__init__()
+        
+        # Create a matrix of shape (block_size, n_embd//2)
+        theta = 10000.0 ** (-torch.arange(0, n_embd, 2).float() / n_embd)
+        position = torch.arange(0, block_size, dtype=torch.float).unsqueeze(1)
+        
+        # Compute cos and sin components
+        cos_emb = torch.cos(position * theta)
+        sin_emb = torch.sin(position * theta)
+        
+        # Register buffers to store precomputed values
+        self.register_buffer('cos_emb', cos_emb)
+        self.register_buffer('sin_emb', sin_emb)
+    
+    def forward(self, x):
+        # Split last dimension into pairs (real and imaginary parts)
+        x1, x2 = x[..., 0::2], x[..., 1::2]
+        
+        # Rotate embeddings
+        x_rot = torch.stack([x1 * self.cos_emb - x2 * self.sin_emb, x1 * self.sin_emb + x2 * self.cos_emb], dim=-1)
+        
+        # Merge back into original shape
+        return x_rot.flatten(-2)
 
 class Block(nn.Module):
     """ an unassuming Transformer block """
@@ -197,7 +222,12 @@ class GPT(nn.Module):
         elif pos_enc_type == 2:
             pos_enc = self.sinusoidal_pos_enc(config.block_size, config.n_embd)
             pos_enc = nn.Embedding.from_pretrained(pos_enc, freeze=True)
-            print("Sinusoidal positional encodings:" + pos_enc)
+            print("Sinusoidal positional encodings:")
+            print(pos_enc)
+        elif pos_enc_type == 3:
+            pos_enc = RotaryPositionalEncoding(config.block_size, config.n_embd)
+            print("Rotary positional encodings:")
+            print(pos_enc)
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
@@ -327,7 +357,7 @@ class GPT(nn.Module):
 
         return emb
     
-    def rotary_pos_enc(self, block_size, n_embd):
+    def rpe(self, block_size, n_embd):
         """
         Compute rotary positional encodings with a given length and dimensionality.
         """
@@ -344,8 +374,8 @@ class GPT(nn.Module):
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
-        print("Token Embeddings:" + tok_emb)
-        print("Positional Embeddings:" + pos_emb)
+        print("Positional Embeddings:")
+        print(pos_emb)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x, mask_tokens=mask_tokens)
