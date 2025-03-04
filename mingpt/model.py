@@ -125,26 +125,32 @@ class RotaryPositionalEncoding(nn.Module):
         # Split last dimension into pairs (real and imaginary parts)
         x1, x2 = x[..., 0::2], x[..., 1::2]
         
-        print("x shape:")
-        print(x.shape)
+        #print("x shape:")
+        #print(x.shape)
+
+        # Shorten embeddings if necessary
+        cos_emb = self.cos_emb[:x.size(-2)]
+        sin_emb = self.sin_emb[:x.size(-2)]
         
         # Rotate embeddings
-        x_rot = torch.stack([x1 * self.cos_emb - x2 * self.sin_emb, x1 * self.sin_emb + x2 * self.cos_emb], dim=-1)
+        x_rot = torch.stack([x1 * cos_emb - x2 * sin_emb, x1 * sin_emb + x2 * cos_emb], dim=-1)
         
         # Merge back into original shape
         return x_rot.flatten(-2)
 
 class SinusoidalPositionalEncoding(nn.Module):
     def __init__(self, block_size, n_embd):
+        super(SinusoidalPositionalEncoding, self).__init__()
         self.n_embd = n_embd
         self.block_size = block_size
-        self.emb = torch.zeros(block_size, n_embd)
     
     def forward(self, x):
+        self.emb = torch.zeros(x.size(1), self.n_embd)
         div = torch.exp(torch.arange(0, self.n_embd, 2).float() * -(math.log(10000.0) / self.n_embd))
-        self.emb[:, 0::2] = torch.sin(x * div)
-        self.emb[:, 1::2] = torch.cos(x * div)
-        return self.emb
+        pos = torch.arange(0, x.size(1)).unsqueeze(1).float()
+        self.emb[:, 0::2] = torch.sin(pos * div)
+        self.emb[:, 1::2] = torch.cos(pos * div)
+        return self.emb.unsqueeze(0)
 
 class Block(nn.Module):
     """ an unassuming Transformer block """
@@ -230,6 +236,7 @@ class GPT(nn.Module):
             }[config.model_type])
         
         # Configure positional embeddings
+        self.rope = False
         if pos_enc_type == 0:
             pos_enc = None
         elif pos_enc_type == 1:
@@ -385,11 +392,13 @@ class GPT(nn.Module):
             tok_emb = self.transformer.wte(idx)
             emb = self.transformer.wpe(tok_emb)
             x = self.transformer.drop(emb)
+            #print("ENTERED HERE")
         else: 
             tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
             pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
-            print("Positional Embeddings:")
-            print(pos_emb)
+            tok_emb = tok_emb.to(device)
+            pos_emb = pos_emb.to(device)
+            #print(pos_emb)
             x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x, mask_tokens=mask_tokens)
