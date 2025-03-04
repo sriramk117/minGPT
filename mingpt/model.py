@@ -125,11 +125,26 @@ class RotaryPositionalEncoding(nn.Module):
         # Split last dimension into pairs (real and imaginary parts)
         x1, x2 = x[..., 0::2], x[..., 1::2]
         
+        print("x shape:")
+        print(x.shape)
+        
         # Rotate embeddings
         x_rot = torch.stack([x1 * self.cos_emb - x2 * self.sin_emb, x1 * self.sin_emb + x2 * self.cos_emb], dim=-1)
         
         # Merge back into original shape
         return x_rot.flatten(-2)
+
+class SinusoidalPositionalEncoding(nn.Module):
+    def __init__(self, block_size, n_embd):
+        self.n_embd = n_embd
+        self.block_size = block_size
+        self.emb = torch.zeros(block_size, n_embd)
+    
+    def forward(self, x):
+        div = torch.exp(torch.arange(0, self.n_embd, 2).float() * -(math.log(10000.0) / self.n_embd))
+        self.emb[:, 0::2] = torch.sin(x * div)
+        self.emb[:, 1::2] = torch.cos(x * div)
+        return self.emb
 
 class Block(nn.Module):
     """ an unassuming Transformer block """
@@ -220,11 +235,11 @@ class GPT(nn.Module):
         elif pos_enc_type == 1:
             pos_enc = nn.Embedding(config.block_size, config.n_embd)
         elif pos_enc_type == 2:
-            pos_enc = self.sinusoidal_pos_enc(config.block_size, config.n_embd)
-            pos_enc = nn.Embedding.from_pretrained(pos_enc, freeze=True)
+            pos_enc = SinusoidalPositionalEncoding(config.block_size, config.n_embd)
             print("Sinusoidal positional encodings:")
             print(pos_enc)
         elif pos_enc_type == 3:
+            self.rope = True
             pos_enc = RotaryPositionalEncoding(config.block_size, config.n_embd)
             print("Rotary positional encodings:")
             print(pos_enc)
@@ -356,12 +371,6 @@ class GPT(nn.Module):
         emb[:, 1::2] = torch.cos(pos * div)
 
         return emb
-    
-    def rpe(self, block_size, n_embd):
-        """
-        Compute rotary positional encodings with a given length and dimensionality.
-        """
-        pass
 
     def forward(self, idx, targets=None):
         device = idx.device
@@ -372,11 +381,16 @@ class GPT(nn.Module):
         mask_tokens = (idx == self.pad_token)
 
         # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
-        print("Positional Embeddings:")
-        print(pos_emb)
-        x = self.transformer.drop(tok_emb + pos_emb)
+        if self.rope:
+            tok_emb = self.transformer.wte(idx)
+            emb = self.transformer.wpe(tok_emb)
+            x = self.transformer.drop(emb)
+        else: 
+            tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
+            pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
+            print("Positional Embeddings:")
+            print(pos_emb)
+            x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x, mask_tokens=mask_tokens)
         x = self.transformer.ln_f(x)
